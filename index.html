@@ -8,11 +8,11 @@
     <meta name="description" content="Private, browser-based drawing set updates." />
     <link rel="preconnect" href="https://cdnjs.cloudflare.com" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
-    <link rel="stylesheet" href="./styles.css?v=2026081104" />
+    <link rel="stylesheet" href="./styles.css?v=2026081403" />
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script defer src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script defer src="./app.js?v=2026081106"></script>
+    <script defer src="./app.js?v=2026081404"></script>
   </head>
   <body class="mode-cover-active">
     <main class="app-shell">
@@ -52,12 +52,12 @@
             <input class="file-input" type="file" accept="application/pdf" aria-label="Upload original drawing set" />
             <div class="file-meta empty">Awaiting original PDF</div><div class="card-progress hidden" id="original-progress"><div><span class="card-progress-title">Reading PDF</span><span class="card-progress-count">0%</span></div><i><b></b></i></div>
           </article>
-          <article class="upload-card muted-card" id="update-card" data-kind="update">
+          <article class="upload-card ready" id="update-card" data-kind="update">
             <div class="card-top"><span class="card-icon blue"><i class="fa-solid fa-arrows-rotate"></i></span><span class="card-label">STEP 02</span></div>
             <h2>Updated sheets</h2><p>One compiled PDF containing revisions.</p>
-            <button class="dropzone" type="button" disabled><i class="fa-solid fa-arrow-up-from-bracket"></i><strong>Drop PDF here</strong><span>Upload the original first</span></button>
-            <input class="file-input" type="file" accept="application/pdf" aria-label="Upload update sheets" disabled />
-            <div class="file-meta empty">Locked until original is ready</div><div class="card-progress hidden" id="update-progress"><div><span class="card-progress-title">Reading PDF</span><span class="card-progress-count">0%</span></div><i><b></b></i></div>
+            <button class="dropzone" type="button"><i class="fa-solid fa-arrow-up-from-bracket"></i><strong>Drop PDF here</strong><span>or choose a file</span></button>
+            <input class="file-input" type="file" accept="application/pdf" aria-label="Upload update sheets" />
+            <div class="file-meta empty">Awaiting updated sheets PDF</div><div class="card-progress hidden" id="update-progress"><div><span class="card-progress-title">Reading PDF</span><span class="card-progress-count">0%</span></div><i><b></b></i></div>
           </article>
         </section>
 
