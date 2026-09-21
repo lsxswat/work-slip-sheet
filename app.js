@@ -1,5 +1,5 @@
 /* Slip Sheet local processing MVP. PDF libraries are loaded in the browser; no file bytes leave this device. */
-const state={original:null,update:null,changes:[],bookmarks:[],selected:null,removed:new Set(),demo:false,loadingKind:null,narratives:new Map(),spec:{current:null,incoming:null,groups:[],demo:false},filterVisible:{replace:true,keep:true,insert:true,warning:true}};
+const state={original:null,update:null,changes:[],bookmarks:[],selected:null,removed:new Set(),demo:false,loadingKind:null,narratives:new Map(),spec:{current:null,incoming:null,groups:[],demo:false},filterVisible:{replace:true,keep:false,insert:true,warning:true}};
 const $=s=>document.querySelector(s);
 const escapeHtml=s=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const matchLabel=label=>String(label||'').trim().split(/\s+/,1)[0];
@@ -15,6 +15,7 @@ const specExportStages=['Prepare files','Replace/insert pages','Rebuild bookmark
 const specExportStageDurations=[3000,3000,3000,4000];
 function copyMarkupsEnabled(){return $('#copy-markups')?.checked!==false}
 function insertNewSheetsEnabled(){return $('#insert-new-sheets')?.checked!==false}
+function buildSheetHyperlinksEnabled(){return $('#build-sheet-hyperlinks')?.checked!==false}
 function dedupeOriginalEnabled(){return $('#dedupe-original')?.checked===true}
 function resequenceEnabled(){return $('#resequence-discipline')?.checked===true}
 function drawingExportPlan(copyMarkups=copyMarkupsEnabled()){const stages=[...exportStages],durations=[...exportStageDurations];if(copyMarkups){const markupStage=stages.length-1;stages.splice(markupStage,0,'Transfer markups');durations.splice(markupStage,0,3000)}return {stages,durations}}
@@ -107,12 +108,76 @@ function buildPlan(){
 }
 async function upload(file,kind){
  if(!file)return;if(file.type!== 'application/pdf'&&!file.name.toLowerCase().endsWith('.pdf'))return toast('Please choose a PDF file.');
- try{state.loadingKind=kind;state[kind]=null;state.demo=false;$('#review-section').classList.add('hidden');setProgress(kind==='original'?'Reading Original PDF':'Reading Update PDF','Extracting native page labels and bookmark structure…',18,kind);const parsed=await parsePdf(file,kind);const dup=duplicates(parsed.entries);if(dup.length)toast(`Warning: duplicate labels found: ${dup.slice(0,3).join(', ')}`);state[kind]=parsed;
+ try{state.loadingKind=kind;state[kind]=null;state.demo=false;$('#review-section').classList.add('hidden');setProgress(kind==='original'?'Reading Original PDF':'Reading Update PDF','Extracting native page labels and bookmark structure…',18,kind);const parsed=await parsePdf(file,kind);const dup=duplicates(parsed.entries);if(dup.length)toast(`Warning: duplicate labels found: ${dup.slice(0,3).join(', ')}`);state[kind]=parsed;addToRecentFiles(kind,file);
+  document.querySelectorAll('.recent-select').forEach(select=>select.addEventListener('change',async(e)=>{
+    if(!e.target.value)return;
+    const entry=JSON.parse(e.target.value);
+    const kind=e.target.dataset.kind;
+    try{
+      const cached=await caches.open('pdf-cache');
+      const keys=await cached.keys();
+      let file=null;
+      for(const req of keys){
+        const resp=await cached.match(req);
+        const blob=await resp.blob();
+        if(blob.size===entry.size&&blob.name===entry.name){
+          file=new File([blob],entry.name,{type:entry.type,lastModified:entry.lastModified});
+          break
+        }
+      }
+      if(!file){
+        toast('This file is no longer available. Please upload it again.');
+        return
+      }
+      upload(file,kind)
+    }catch(e){
+      toast('Could not load recent file. Please upload it again.');
+      console.warn('Recent file error',e)
+    }
+    e.target.value=''
+  }));
   const card=$(`#${kind}-card`);card.classList.add('loaded');card.querySelector('.file-meta').classList.remove('empty');card.querySelector('.file-meta').innerHTML=fileInfo(file,{pages:parsed.entries.length,bookmarks:parsed.bookmarkCount});card.querySelector('.dropzone i').className='fa-solid fa-check';card.querySelector('.dropzone strong').textContent='Replace PDF';card.querySelector('.dropzone span').textContent='Choose another file to replace it';
   setProgress(kind==='original'?'Original PDF ready':'Updated sheets ready',`${parsed.entries.length} pages · ${parsed.bookmarkCount} bookmarks · page labels read`,100,kind);
   if(state.original&&state.update){setProgress('Matching Sheets','Comparing update labels with your original set…',68,kind);await wait(260);buildPlan();setProgress('Analysis complete',`${state.changes.length} items are ready for review.`,100,kind);await wait(340);$('#analysis-panel').classList.add('hidden');$('#demo-note').classList.add('hidden');$('#review-section').scrollIntoView({behavior:'smooth',block:'start'})}else toast(`${kind==='original'?'Original drawing set':'Updated sheets'} ready. You can upload the other PDF at any time.`)
  }catch(e){$('#analysis-panel').classList.add('hidden');toast(e.message||'This PDF could not be read. Please try another file.');console.error(e)}
 }
+
+function addToRecentFiles(kind,file){
+  try{
+    const key='recent_'+kind;
+    const recents=JSON.parse(localStorage.getItem(key)||'[]');
+    const entry={name:file.name,size:file.size,type:file.type,lastModified:file.lastModified,addedAt:new Date().toISOString()};
+    recents.unshift(entry);
+    const unique=[];
+    const seen=new Set();
+    for(const r of recents){
+      const sig=r.name+'_'+r.lastModified;
+      if(!seen.has(sig)){unique.push(r);seen.add(sig)}
+      if(unique.length>=5)break
+    }
+    localStorage.setItem(key,JSON.stringify(unique));
+    updateRecentFilesDropdown(kind)
+  }catch(e){console.warn('Could not save to recent files',e)}
+}
+function updateRecentFilesDropdown(kind){
+  try{
+    const key='recent_'+kind;
+    const recents=JSON.parse(localStorage.getItem(key)||'[]');
+    const select=$(`#${kind}-recent .recent-select`);
+    const container=$(`#${kind}-recent`);
+    if(!recents.length){container.classList.add('hidden');return}
+    container.classList.remove('hidden');
+    const options=select.querySelectorAll('option:not(:first-child)');
+    options.forEach(o=>o.remove());
+    recents.forEach((entry,i)=>{
+      const opt=document.createElement('option');
+      opt.value=JSON.stringify(entry);
+      opt.textContent=entry.name.length>30?entry.name.substring(0,27)+'…':entry.name;
+      select.appendChild(opt)
+    })
+  }catch(e){console.warn('Could not update recent files',e)}
+}
+
 function demoData(){state.demo=true;state.changes=[{type:'replace',label:'A101',oldIndex:24,newIndex:0},{type:'replace',label:'A201',oldIndex:78,newIndex:1},{type:'insert',label:'A205A',newIndex:2,insertAt:83},{type:'replace',label:'S101',oldIndex:143,newIndex:3},{type:'warning',label:'M102',message:'Duplicate label in update PDF'}];state.bookmarks=[{title:'General',items:[{title:'G001',page:1},{title:'G002',page:2}]},{title:'Architecture',items:[{title:'Floor plans',items:[{title:'A101',page:24},{title:'A201',page:78},{title:'A205',page:82}]},{title:'Elevations',items:[{title:'A301',page:98}]}]},{title:'Structural',items:[{title:'Foundation',items:[{title:'S101',page:143}]}]}];renderReview();selectChange(state.changes[0])}
 function outlineToTree(items){return items.map((x,i)=>({title:x.title||'Untitled bookmark',items:outlineToTree(x.items||[]),page:null,id:i}))}
 function renderReview(){state.bookmarks=state.demo?state.bookmarks:outlineToTree(state.original.outline||[]);$('#review-section').classList.remove('hidden');const active=state.changes.filter(x=>!state.removed.has(x));const counts={replace:0,keep:0,insert:0,skip:0,warning:0};active.forEach(x=>counts[x.type]=(counts[x.type]||0)+1);const chips=[['replace','↻',counts.replace,'Replace'],['keep','✓',counts.keep,'Keep'],['insert','+',counts.insert,'Insert'],['skip','⊘',counts.skip,'Not inserted'],['warning','!',counts.warning,'Warning']].filter(x=>x[2]).map(([c,i,v,n])=>`<span class="chip ${c}">${i}&nbsp; ${v} ${n}</span>`).join('');$('#summary-chips').innerHTML=chips;$('#column-summary').innerHTML=chips;$('#changes-total').textContent=`${active.length} sheets`;$('#review-subtitle').textContent=state.demo?'Sample plan — replace it by uploading your PDFs.':'Page labels were matched locally. Nothing has changed in your files.';$('#export-summary').textContent=`${counts.replace} replacements · ${counts.insert} insertions${counts.skip?` · ${counts.skip} new sheets not inserted`:''} · ${counts.warning} items needing attention`;renderTree();renderChanges()}
@@ -284,10 +349,10 @@ async function buildUpdatedPdf(copyMarkups=copyMarkupsEnabled()){
   setExportStage('Update labels',copyMarkups);
   try{rebuildPageLabels(out,labels)}catch(error){metadataIssue=true;console.warn('Page-label preservation skipped',error)}
   setExportStage('Rebuild bookmarks',copyMarkups);
-  try{const finalOutline=disciplineGroupedOutline(labels);const cleanedOutline=droppedOriginals?pruneIndexedBookmarks(finalOutline,droppedOriginals):finalOutline;rebuildBookmarks(out,cleanedOutline,oldToNew)}catch(error){metadataIssue=true;console.warn('Bookmark preservation skipped',error)}
+  try{const originalOutline=await indexedOutline(state.original.outline||[],state.original.doc,labelIndex);const cleanedOutline=droppedOriginals?pruneIndexedBookmarks(originalOutline,droppedOriginals):originalOutline;const finalOutline=sheetsResequenced?disciplineGroupedOutline(labels):cleanedOutline;rebuildBookmarks(out,finalOutline,oldToNew)}catch(error){metadataIssue=true;console.warn('Bookmark preservation skipped',error)}
   setExportStage('Build Sheet Hyperlinks',copyMarkups);updateExportStageProgress('Build Sheet Hyperlinks',.05,copyMarkups);
   updateWritePdfStatus(`Building sheet hyperlinks across ${incomingPages.length.toLocaleString()} updated pages…`);
-  try{remappedLinkCount=remapInternalLinks(originalLinks,out,oldToNew);updateExportStageProgress('Build Sheet Hyperlinks',.18,copyMarkups);createdLinkCount=await createIncomingSheetLinks(out,state.update.doc,incomingPages,labels,(completed,total)=>updateExportStageProgress('Build Sheet Hyperlinks',.18+.81*completed/Math.max(1,total),copyMarkups))}catch(error){linkIssue=true;console.warn('Internal sheet-link rebuilding was incomplete',error)}
+  try{remappedLinkCount=remapInternalLinks(originalLinks,out,oldToNew);updateExportStageProgress('Build Sheet Hyperlinks',.18,copyMarkups);if(buildSheetHyperlinksEnabled())createdLinkCount=await createIncomingSheetLinks(out,state.update.doc,incomingPages,labels,(completed,total)=>updateExportStageProgress('Build Sheet Hyperlinks',.18+.81*completed/Math.max(1,total),copyMarkups))}catch(error){linkIssue=true;console.warn('Internal sheet-link rebuilding was incomplete',error)}
   if(copyMarkups){setExportStage('Transfer markups',copyMarkups);orientationPasteCount=markupTransfers.filter(transfer=>transfer.orientationRisk).length;updateWritePdfStatus(orientationPasteCount?`Pasting complete markup selections in place on ${orientationPasteCount.toLocaleString()} orientation-risk sheet${orientationPasteCount===1?'':'s'}…`:`Transferring markups across ${markupTransfers.length.toLocaleString()} replaced sheets…`);for(const transfer of markupTransfers)markupCount+=copyMarkupAnnotations(transfer.originalPage,transfer.updatedPage,out)}
   setExportStage('Write PDF',copyMarkups);setExportStatus('Writing the final PDF locally…');
   updateWritePdfStatus('Releasing preview memory before writing…');
@@ -309,6 +374,7 @@ async function generatePdf(){const button=$('#generate-pdf'),copyToggle=$('#copy
 document.addEventListener('DOMContentLoaded',()=>{pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';document.querySelectorAll('.upload-card[data-kind]').forEach(card=>{const input=card.querySelector('.file-input'),zone=card.querySelector('.dropzone'),kind=card.dataset.kind;zone.addEventListener('click',()=>!zone.disabled&&input.click());input.addEventListener('change',()=>upload(input.files[0],kind));['dragenter','dragover'].forEach(e=>card.addEventListener(e,x=>{x.preventDefault();if(!zone.disabled)card.classList.add('drag')}));['dragleave','drop'].forEach(e=>card.addEventListener(e,x=>{x.preventDefault();card.classList.remove('drag')}));card.addEventListener('drop',e=>!zone.disabled&&upload(e.dataTransfer.files[0],kind))});document.querySelectorAll('.mode').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.mode').forEach(x=>x.classList.remove('active'));btn.classList.add('active');$('#drawing-view').classList.toggle('hidden',btn.dataset.mode!=='drawing');$('#spec-view').classList.toggle('hidden',btn.dataset.mode!=='spec')}));$('#back-to-drawing')?.addEventListener('click',()=>document.querySelector('[data-mode="drawing"]').click());$('#load-demo').addEventListener('click',()=>{demoData();$('#demo-note').classList.add('hidden')});$('#search-input').addEventListener('input',renderChanges);$('#remove-change').addEventListener('click',()=>{if(state.selected){state.removed.add(state.selected);state.selected=null;$('#preview-empty').classList.remove('hidden');$('#selected-label').textContent='Select a change';$('#remove-change').disabled=true;renderReview();toast('Pending change removed. You can re-upload to restore it.')}});$('#generate-report').addEventListener('click',generateReport);$('#generate-pdf').addEventListener('click',generatePdf);});
 document.addEventListener('DOMContentLoaded',()=>{setupOverlayPan();document.querySelectorAll('.compare-mode').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.compare-mode').forEach(x=>x.classList.toggle('active',x===button));const overlay=button.dataset.compareView==='overlay';$('#split-preview').classList.toggle('hidden',overlay);$('#overlay-stage').classList.toggle('hidden',!overlay);if(overlay)buildOverlay()}));document.querySelectorAll('.left-tab').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.left-tab').forEach(x=>x.classList.toggle('active',x===button));document.querySelectorAll('.left-pane').forEach(x=>x.classList.toggle('hidden',x.id!==button.dataset.leftPane))}));$('#generate-pdf').addEventListener('click',async event=>{event.stopImmediatePropagation();const button=$('#generate-pdf');if(button.disabled)return;button.disabled=true;button.innerHTML='<i class="fa-solid fa-spinner fa-spin"></i>Preparing';setExportStatus('Running export checks…');try{const ready=await animateExportJourney();if(!ready)return;await generatePdf()}catch(error){console.error(error);setExportStatus(`Could not start PDF export: ${String(error?.message||'unknown error').slice(0,150)}`,true)}finally{button.disabled=false;button.innerHTML='<i class="fa-solid fa-file-arrow-down"></i>Generate Updated PDF'}},{capture:true});});
 document.addEventListener('DOMContentLoaded',()=>{const top=$('.preview-top');if(top&&!$('#zoom-in')){const controls=document.createElement('div');controls.className='preview-zoom';controls.innerHTML='<button class="zoom-button" id="zoom-out" title="Zoom out"><i class="fa-solid fa-minus"></i></button><button class="zoom-button" id="zoom-fit" title="Fit to width"><i class="fa-solid fa-arrows-left-right"></i></button><button class="zoom-button" id="zoom-in" title="Zoom in"><i class="fa-solid fa-plus"></i></button>';top.append(controls);$('#zoom-in').onclick=()=>{const c=$('#overlay-canvas');c.dataset.scale=(+c.dataset.scale||1)*1.2;applyOverlayView()};$('#zoom-out').onclick=()=>{const c=$('#overlay-canvas');c.dataset.scale=Math.max(.01,(+c.dataset.scale||1)/1.2);applyOverlayView()};$('#zoom-fit').onclick=resetOverlayView}});
+document.addEventListener('DOMContentLoaded',()=>{updateRecentFilesDropdown('original');updateRecentFilesDropdown('update')});
 document.addEventListener('DOMContentLoaded',()=>setExportProgress(-1));
 document.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('.mode').forEach(button=>button.addEventListener('click',()=>{if(!document.body.classList.contains('mode-cover-active'))return;document.body.classList.remove('mode-cover-active','mode-selected');document.body.classList.add('mode-entering');window.setTimeout(()=>{document.body.classList.remove('mode-entering');document.body.classList.add('mode-selected');document.querySelector(`#${button.dataset.mode}-view`)?.scrollIntoView({behavior:'smooth',block:'start'})},680)}))});
 document.addEventListener('DOMContentLoaded',()=>{$('#back-to-cover')?.addEventListener('click',()=>{window.scrollTo({top:0,behavior:'smooth'});document.querySelectorAll('.mode').forEach(button=>button.classList.remove('active'));document.body.classList.remove('mode-entering','mode-selected');document.body.classList.add('mode-cover-active')})});
