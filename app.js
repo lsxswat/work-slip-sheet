@@ -59,6 +59,7 @@ async function parsePdf(file,kind){
 function countOutline(nodes){return nodes.reduce((n,x)=>n+1+countOutline(x.items||[]),0)}
 function duplicates(entries){const m=new Map;entries.forEach(x=>{const key=x.matchKey||matchLabel(x.label);m.set(key,(m.get(key)||0)+1)});return [...m].filter(([,n])=>n>1).map(([l])=>l)}
 const disciplineOrder=['G','GI','C','CE','L','IR','A','VT','S','M','P','FP','E','FA','TT','TA','SY','TY','CR'];
+const disciplineNames=new Map([['G','00_GENERAL'],['GI','01_LIFE_SAFETY'],['C','02_CIVIL'],['CE','02A_CIVIL_ENABLING'],['L','03_LANDSCAPE'],['IR','03A_IRRIGATION'],['A','05_ARCHITECTURE'],['VT','07_VERTICAL_TRANSPORTATION'],['S','08_STRUCTURE'],['M','09_MECHANICAL'],['P','10_PLUMBING'],['FP','11_FIRE_PROTECTION'],['E','12_ELECTRICAL'],['FA','13_FIRE_ALARM'],['TT','14_TELECOM'],['TA','15_AUDIO_VISUAL'],['SY','16_SECURITY'],['TY','17_SPECIALTY'],['CR','18_CLEANROOM']]);
 const disciplineRank=new Map(disciplineOrder.map((code,index)=>[code,index]));
 function sheetOrder(label){const value=String(label||'').trim(),match=value.match(/^([A-Za-z]+)\s*(.*)$/);if(!match)return [Number.MAX_SAFE_INTEGER,value.toUpperCase(),[],value.toUpperCase()];const code=match[1].toUpperCase(),rank=disciplineRank.has(code)?disciplineRank.get(code):disciplineOrder.length,tokens=(match[2].match(/\d+|[A-Za-z]+/g)||[]).map(token=>/^\d+$/.test(token)?Number(token):token.toUpperCase());return [rank,code,tokens,value.toUpperCase()]}
 function compareSheetTokens(left,right){const length=Math.max(left.length,right.length);for(let index=0;index<length;index++){if(index>=left.length)return-1;if(index>=right.length)return 1;const a=left[index],b=right[index];if(typeof a==='number'&&typeof b==='number'){if(a!==b)return a-b;continue}if(typeof a==='number')return-1;if(typeof b==='number')return 1;const compared=a.localeCompare(b,undefined,{numeric:true,sensitivity:'base'});if(compared)return compared}return 0}
@@ -158,6 +159,29 @@ async function writePdfIncrementally(pdf,fileHandle){
 function reorderDocumentPages(pdf,order){const pages=pdf.getPages(),desired=order.map(index=>pages[index]);if(desired.some(page=>!page))throw new Error('Page reorder received an out-of-range index.');for(let index=pdf.getPageCount()-1;index>=0;index--)pdf.removePage(index);for(const page of desired)pdf.addPage(page);if(pdf.getPageCount()!==desired.length)throw new Error('Page reorder produced an unexpected page count.')}
 /* Remove indexed-outline nodes whose destination sheet was dropped (a duplicate), keeping any parent that still has surviving children. */
 function pruneIndexedBookmarks(nodes,droppedOriginals){return nodes.map(node=>({...node,items:pruneIndexedBookmarks(node.items||[],droppedOriginals)})).filter(node=>!(droppedOriginals.has(node.pageIndex)&&!(node.items&&node.items.length)))}
+/* Create a 2-level bookmark outline: Level 1 = discipline names (pointing to first sheet in that discipline), Level 2 = individual sheet labels. */
+function disciplineGroupedOutline(labels){
+  const disciplineMap=new Map(),order=[];
+  for(let outputIndex=0;outputIndex<labels.length;outputIndex++){
+    const label=labels[outputIndex],disciplineCode=matchLabel(label);
+    if(!disciplineMap.has(disciplineCode)){
+      order.push(disciplineCode);
+      disciplineMap.set(disciplineCode,[]);
+    }
+    disciplineMap.get(disciplineCode).push({title:label,pageIndex:outputIndex});
+  }
+  const nodes=[];
+  for(const code of order){
+    const sheets=disciplineMap.get(code),firstPageIndex=sheets[0].pageIndex;
+    const disciplineName=disciplineNames.get(code)||code;
+    nodes.push({
+      title:disciplineName,
+      pageIndex:firstPageIndex,
+      items:sheets.map(sheet=>({title:sheet.title,pageIndex:sheet.pageIndex,items:[]}))
+    });
+  }
+  return nodes;
+}
 async function buildUpdatedPdf(copyMarkups=copyMarkupsEnabled()){
   const options={ignoreEncryption:true,updateMetadata:false};
   setExportStage('Prepare files',copyMarkups);
@@ -218,7 +242,7 @@ async function buildUpdatedPdf(copyMarkups=copyMarkupsEnabled()){
   setExportStage('Update labels',copyMarkups);
   try{rebuildPageLabels(out,labels)}catch(error){metadataIssue=true;console.warn('Page-label preservation skipped',error)}
   setExportStage('Rebuild bookmarks',copyMarkups);
-  try{const outline=await indexedOutline(state.original.outline||[],state.original.doc,labelIndex);const cleanedOutline=droppedOriginals?pruneIndexedBookmarks(outline,droppedOriginals):outline;rebuildBookmarks(out,addInsertedDrawingBookmarks(cleanedOutline,insertedBookmarks,oldToNew),oldToNew)}catch(error){metadataIssue=true;console.warn('Bookmark preservation skipped',error)}
+  try{const finalOutline=disciplineGroupedOutline(labels);const cleanedOutline=droppedOriginals?pruneIndexedBookmarks(finalOutline,droppedOriginals):finalOutline;rebuildBookmarks(out,cleanedOutline,oldToNew)}catch(error){metadataIssue=true;console.warn('Bookmark preservation skipped',error)}
   setExportStage('Build Sheet Hyperlinks',copyMarkups);updateExportStageProgress('Build Sheet Hyperlinks',.05,copyMarkups);
   updateWritePdfStatus(`Building sheet hyperlinks across ${incomingPages.length.toLocaleString()} updated pages…`);
   try{remappedLinkCount=remapInternalLinks(originalLinks,out,oldToNew);updateExportStageProgress('Build Sheet Hyperlinks',.18,copyMarkups);createdLinkCount=await createIncomingSheetLinks(out,state.update.doc,incomingPages,labels,(completed,total)=>updateExportStageProgress('Build Sheet Hyperlinks',.18+.81*completed/Math.max(1,total),copyMarkups))}catch(error){linkIssue=true;console.warn('Internal sheet-link rebuilding was incomplete',error)}
