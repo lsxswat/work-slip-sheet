@@ -67,7 +67,7 @@ function compareSheets(a,b){const x=sheetOrder(a),y=sheetOrder(b);return x[0]-y[
 function proposeInsert(label,original){let before=original.find(x=>compareSheets(label,x.label)<0);return before?before.pageIndex:original.length}
 function buildPlan(){
  const originalBy=new Map(state.original.entries.map(x=>[x.matchKey,x]));const seen=new Set();const plan=[];
- for(const page of state.update.entries){if(seen.has(page.matchKey)){plan.push(dedupeOriginalEnabled()?{type:'skip',label:page.label,matchKey:page.matchKey,oldIndex:null,newIndex:page.pageIndex,message:`Duplicate in updated PDF — removed (kept the first “${page.matchKey}”)`}:{type:'warning',label:page.label,message:`Duplicate match key “${page.matchKey}” in updated PDF`,newIndex:page.pageIndex});continue}seen.add(page.matchKey);const old=originalBy.get(page.matchKey);if(old){plan.push({type:'replace',label:page.label,matchKey:page.matchKey,oldIndex:old.pageIndex,newIndex:page.pageIndex})}else{const insertAt=proposeInsert(page.matchKey,state.original.entries);plan.push(insertNewSheetsEnabled()?{type:'insert',label:page.label,matchKey:page.matchKey,oldIndex:null,newIndex:page.pageIndex,insertAt}:{type:'skip',label:page.label,matchKey:page.matchKey,oldIndex:null,newIndex:page.pageIndex,insertAt,message:'New sheet — not in original set (insertion off)'})}}
+ for(const page of state.update.entries){if(seen.has(page.matchKey)){if(dedupeOriginalEnabled()){plan.push({type:'skip',label:page.label,matchKey:page.matchKey,oldIndex:null,newIndex:page.pageIndex,message:'Duplicate — click to choose which to keep',isDuplicate:true})}else{plan.push({type:'warning',label:page.label,message:`Duplicate match key "${page.matchKey}" in updated PDF`,newIndex:page.pageIndex})}continue}seen.add(page.matchKey);const old=originalBy.get(page.matchKey);if(old){plan.push({type:'replace',label:page.label,matchKey:page.matchKey,oldIndex:old.pageIndex,newIndex:page.pageIndex})}else{const insertAt=proposeInsert(page.matchKey,state.original.entries);plan.push(insertNewSheetsEnabled()?{type:'insert',label:page.label,matchKey:page.matchKey,oldIndex:null,newIndex:page.pageIndex,insertAt}:{type:'skip',label:page.label,matchKey:page.matchKey,oldIndex:null,newIndex:page.pageIndex,insertAt,message:'New sheet — not in original set (insertion off)'})}} 
  for(const label of duplicates(state.original.entries))plan.push({type:'warning',label,message:'Duplicate label in original PDF'});
  state.changes=plan; renderReview();selectChange(plan.find(x=>x.type!=='warning'));
 }
@@ -182,6 +182,8 @@ function disciplineGroupedOutline(labels){
   }
   return nodes;
 }
+/* When deduping, track duplicate groups so user can manually pick which copy to keep in the review UI */
+const duplicateGroups=new Map();
 async function buildUpdatedPdf(copyMarkups=copyMarkupsEnabled()){
   const options={ignoreEncryption:true,updateMetadata:false};
   setExportStage('Prepare files',copyMarkups);
