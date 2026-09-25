@@ -65,7 +65,7 @@ async function parsePdf(file,kind){
 function countOutline(nodes){return nodes.reduce((n,x)=>n+1+countOutline(x.items||[]),0)}
 function duplicates(entries){const m=new Map;entries.forEach(x=>{const key=x.matchKey||matchLabel(x.label);m.set(key,(m.get(key)||0)+1)});return [...m].filter(([,n])=>n>1).map(([l])=>l)}
 const disciplineOrder=['G','GI','C','CE','L','IR','A','VT','S','M','P','FP','E','FA','TT','TA','SY','TY','CR'];
-const disciplineNames=new Map([['G','00_GENERAL'],['GI','01_LIFE_SAFETY'],['C','02_CIVIL'],['CE','02A_CIVIL_ENABLING'],['L','03_LANDSCAPE'],['IR','03A_IRRIGATION'],['A','05_ARCHITECTURE'],['VT','07_VERTICAL_TRANSPORTATION'],['S','08_STRUCTURE'],['M','09_MECHANICAL'],['P','10_PLUMBING'],['FP','11_FIRE_PROTECTION'],['E','12_ELECTRICAL'],['FA','13_FIRE_ALARM'],['TT','14_TELECOM'],['TA','15_AUDIO_VISUAL'],['SY','16_SECURITY'],['TY','17_SPECIALTY'],['CR','18_CLEANROOM']]);
+const disciplineNames=new Map([['G','GENERAL'],['GI','LIFE SAFETY'],['C','CIVIL'],['CE','CIVIL ENABLING'],['L','LANDSCAPE'],['IR','IRRIGATION'],['A','ARCHITECTURE'],['VT','VERTICAL TRANSPORTATION'],['S','STRUCTURAL'],['M','MECHANICAL'],['P','PLUMBING'],['FP','FIRE PROTECTION'],['E','ELECTRICAL'],['FA','FIRE ALARM'],['TT','TELECOMMUNICATIONS'],['TA','AUDIO VISUAL'],['SY','SECURITY'],['TY','SPECIALTIES'],['CR','CLEANROOM']]);
 const disciplineRank=new Map(disciplineOrder.map((code,index)=>[code,index]));
 function normalizeDisciplineCode(code){const match=code.match(/^([A-Z]+?)([A-Z]?)$/);if(!match)return code;const base=match[1];const suffix=match[2]||'';if(suffix&&!disciplineRank.has(code))return base;return code}
 function sheetOrder(label){const value=String(label||'').trim(),match=value.match(/^([A-Za-z]+)\s*(.*)$/);if(!match)return [Number.MAX_SAFE_INTEGER,value.toUpperCase(),[],value.toUpperCase()];let code=match[1].toUpperCase(),normalized=normalizeDisciplineCode(code);const rank=disciplineRank.has(normalized)?disciplineRank.get(normalized):disciplineRank.has(code)?disciplineRank.get(code):disciplineOrder.length,tokens=(match[2].match(/\d+|[A-Za-z]+/g)||[]).map(token=>/^\d+$/.test(token)?Number(token):token.toUpperCase());return [rank,normalized,tokens,value.toUpperCase()]}
@@ -200,31 +200,33 @@ async function writePdfIncrementally(pdf,fileHandle){
 function reorderDocumentPages(pdf,order){const pages=pdf.getPages(),desired=order.map(index=>pages[index]);if(desired.some(page=>!page))throw new Error('Page reorder received an out-of-range index.');for(let index=pdf.getPageCount()-1;index>=0;index--)pdf.removePage(index);for(const page of desired)pdf.addPage(page);if(pdf.getPageCount()!==desired.length)throw new Error('Page reorder produced an unexpected page count.')}
 /* Remove indexed-outline nodes whose destination sheet was dropped (a duplicate), keeping any parent that still has surviving children. */
 function pruneIndexedBookmarks(nodes,droppedOriginals){return nodes.map(node=>({...node,items:pruneIndexedBookmarks(node.items||[],droppedOriginals)})).filter(node=>!(droppedOriginals.has(node.pageIndex)&&!(node.items&&node.items.length)))}
-/* Create a 2-level bookmark outline: Level 1 = discipline names (pointing to first sheet in that discipline), Level 2 = individual sheet labels. */
+/* Create a 2-level bookmark outline: Level 1 = discipline master bookmarks in a hard-coded order/name (pointing to the first sheet in that discipline), Level 2 = every sheet belonging to that discipline, nested underneath its single master. */
 function disciplineGroupedOutline(labels){
-  const disciplineMap=new Map(),order=[];
+  const disciplineMap=new Map();
   for(let outputIndex=0;outputIndex<labels.length;outputIndex++){
     const label=labels[outputIndex];
-    let disciplineCode=matchLabel(label);
-    const normalized=normalizeDisciplineCode(disciplineCode);
-    const masterCode=normalized;
-    if(!disciplineMap.has(masterCode)){
-      order.push(masterCode);
-      disciplineMap.set(masterCode,[]);
-    }
-    disciplineMap.get(masterCode).push({title:label,pageIndex:outputIndex,code:disciplineCode});
+    // Extract only the leading alphabetic discipline prefix (e.g. "G0.0.0" -> "G", "GI1.2.0" -> "GI").
+    // Using the raw label here (instead of just the alpha prefix) was the bug that produced one master per sheet.
+    const prefixMatch=String(label||'').trim().match(/^([A-Za-z]+)/);
+    const rawCode=prefixMatch?prefixMatch[1].toUpperCase():'';
+    const masterCode=normalizeDisciplineCode(rawCode)||rawCode;
+    if(!disciplineMap.has(masterCode))disciplineMap.set(masterCode,[]);
+    disciplineMap.get(masterCode).push({title:label,outputIndex});
   }
+  // Hard-coded discipline order/names drive the master bookmark sequence, not the physical page order.
+  // Any code encountered that isn't in the hard-coded list is appended at the end (sorted) so no sheets are ever dropped.
+  const unknownCodes=[...disciplineMap.keys()].filter(code=>!disciplineRank.has(code)).sort();
+  const orderedCodes=[...disciplineOrder,...unknownCodes];
   const nodes=[];
-  for(const masterCode of order){
+  for(const masterCode of orderedCodes){
     const sheets=disciplineMap.get(masterCode);
-    if(!sheets.length)continue;
-    sheets.sort((a,b)=>compareSheetTokens(a.code.match(/\d+|[A-Za-z]+/g)||[],b.code.match(/\d+|[A-Za-z]+/g)||[]));
-    const firstPageIndex=sheets[0].pageIndex;
+    if(!sheets||!sheets.length)continue;
+    sheets.sort((a,b)=>compareSheets(a.title,b.title));
     const disciplineName=disciplineNames.get(masterCode)||masterCode;
     nodes.push({
       title:disciplineName,
-      pageIndex:firstPageIndex,
-      items:sheets.map(sheet=>({title:sheet.title,pageIndex:sheet.pageIndex,items:[]}))
+      outputIndex:sheets[0].outputIndex,
+      items:sheets.map(sheet=>({title:sheet.title,outputIndex:sheet.outputIndex,items:[]}))
     });
   }
   return nodes;
@@ -291,7 +293,10 @@ async function buildUpdatedPdf(copyMarkups=copyMarkupsEnabled()){
   setExportStage('Update labels',copyMarkups);
   try{rebuildPageLabels(out,labels)}catch(error){metadataIssue=true;console.warn('Page-label preservation skipped',error)}
   setExportStage('Rebuild bookmarks',copyMarkups);
-  try{const originalOutline=await indexedOutline(state.original.outline||[],state.original.doc,labelIndex);const cleanedOutline=droppedOriginals?pruneIndexedBookmarks(originalOutline,droppedOriginals):originalOutline;const finalOutline=sheetsResequenced?disciplineGroupedOutline(labels):cleanedOutline;rebuildBookmarks(out,finalOutline,oldToNew)}catch(error){metadataIssue=true;console.warn('Bookmark preservation skipped',error)}
+  // `labels` already reflects the final, output-ordered sheet set (replacements/insertions/keeps/drops/resequencing all resolved above),
+  // so the discipline-grouped hierarchy (1 hard-coded master per discipline, every sheet nested under it) is always rebuilt from it —
+  // this replaces the flat "1 master + 1 child per sheet" bookmark structure entirely.
+  try{const finalOutline=disciplineGroupedOutline(labels);rebuildBookmarks(out,finalOutline,oldToNew)}catch(error){metadataIssue=true;console.warn('Bookmark preservation skipped',error)}
   setExportStage('Build Sheet Hyperlinks',copyMarkups);updateExportStageProgress('Build Sheet Hyperlinks',.05,copyMarkups);
   updateWritePdfStatus(`Building sheet hyperlinks across ${incomingPages.length.toLocaleString()} updated pages…`);
   try{remappedLinkCount=remapInternalLinks(originalLinks,out,oldToNew);updateExportStageProgress('Build Sheet Hyperlinks',.18,copyMarkups);if(buildSheetHyperlinksEnabled())createdLinkCount=await createIncomingSheetLinks(out,state.update.doc,incomingPages,labels,(completed,total)=>updateExportStageProgress('Build Sheet Hyperlinks',.18+.81*completed/Math.max(1,total),copyMarkups))}catch(error){linkIssue=true;console.warn('Internal sheet-link rebuilding was incomplete',error)}
