@@ -224,11 +224,26 @@ function disciplineGroupedOutline(labels){
     if(!sheets||!sheets.length)continue;
     sheets.sort((a,b)=>compareSheets(a.title,b.title));
     const disciplineName=disciplineNames.get(masterCode)||masterCode;
-    nodes.push({
-      title:disciplineName,
-      outputIndex:sheets[0].outputIndex,
-      items:sheets.map(sheet=>({title:sheet.title,outputIndex:sheet.outputIndex,items:[]}))
-    });
+    let items=sheets.map(sheet=>({title:sheet.title,outputIndex:sheet.outputIndex,items:[]}));
+    // Architecture only: add a series level between ARCHITECTURE and A1-A12 sheets.
+    // A0 sheets and non-standard architecture prefixes (for example AD) remain directly under ARCHITECTURE.
+    if(masterCode==='A'){
+      const grouped=new Map(),direct=[];
+      for(const sheet of sheets){
+        const key=matchLabel(sheet.title).replace(/\s+/g,'').toUpperCase();
+        const seriesMatch=key.match(/^A(1[0-2]|[1-9])(?:[^0-9]|$)/);
+        if(!seriesMatch){direct.push(sheet);continue}
+        const series=Number(seriesMatch[1]);
+        if(!grouped.has(series))grouped.set(series,[]);
+        grouped.get(series).push(sheet);
+      }
+      items=direct.map(sheet=>({title:sheet.title,outputIndex:sheet.outputIndex,items:[]}));
+      for(const series of [...grouped.keys()].sort((a,b)=>a-b)){
+        const groupSheets=grouped.get(series).sort((a,b)=>compareSheets(a.title,b.title));
+        items.push({title:`A${series}s`,outputIndex:groupSheets[0].outputIndex,items:groupSheets.map(sheet=>({title:sheet.title,outputIndex:sheet.outputIndex,items:[]}))});
+      }
+    }
+    nodes.push({title:disciplineName,outputIndex:sheets[0].outputIndex,items});
   }
   return nodes;
 }
