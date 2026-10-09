@@ -225,3 +225,12 @@ body.mode-cover-active .mode.active{background:#fafaf7!important;box-shadow:0 1p
 }
 
 #spec-view .section-inline > .spec-effect-tag { display:inline-flex !important; align-items:center; }
+
+/* v2026.10.09.05: workflow selector belongs to the header, not the viewport.
+   Cover positioning is unchanged; selected workflows scroll normally. */
+body.mode-entering .mode-switch,body.mode-selected .mode-switch{
+  position:relative!important;
+  left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;
+  transform:none!important;
+  flex-shrink:0;
+}
